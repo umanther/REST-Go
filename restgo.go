@@ -4,41 +4,55 @@ import (
 	"net/url"
 	"fmt"
 	"net/http"
-	"errors"
 	"log"
 	"bytes"
 	"encoding/base64"
+	"os"
+	"strings"
+	"time"
+	"errors"
 )
 
-// htmlMethod enum ------
-type htmlMethod string
+var debugLogger *log.Logger
+
+func init() {
+	debugLogger = log.New(os.Stderr, "restgo) ", log.LstdFlags)
+}
+
+// HTMLMethod enum ------
+
+// Allowed HTML Methods used for requests
+type HTMLMethod string
 
 const (
-	MethodGet    htmlMethod = "GET"
-	MethodPut    htmlMethod = "PUT"
-	MethodPost   htmlMethod = "POST"
-	MethodPatch  htmlMethod = "PATCH"
-	MethodDelete htmlMethod = "DELETE"
+	MethodGet    HTMLMethod = "GET"
+	MethodPut    HTMLMethod = "PUT"
+	MethodPost   HTMLMethod = "POST"
+	MethodPatch  HTMLMethod = "PATCH"
+	MethodDelete HTMLMethod = "DELETE"
 )
 
 //------------------------
 
-
 // htmlResponses enum -----
-type htmlResponse int
+
+// List of possible HTML responses
+type HTMLResponse int
 
 const (
-	responseSuccessBody      htmlResponse = 200
-	responseCreated          htmlResponse = 201
-	responseSuccessNoBody    htmlResponse = 204
-	responseBadRequest       htmlResponse = 400
-	responseUnauthorized     htmlResponse = 401
-	responseForbidden        htmlResponse = 403
-	responseNotFound         htmlResponse = 404
-	responseMethodNotAllowed htmlResponse = 405
+	ResponseSuccessBody      HTMLResponse = 200
+	ResponseCreated          HTMLResponse = 201
+	ResponseSuccessNoBody    HTMLResponse = 204
+	ResponseBadRequest       HTMLResponse = 400
+	ResponseUnauthorized     HTMLResponse = 401
+	ResponseForbidden        HTMLResponse = 403
+	ResponseNotFound         HTMLResponse = 404
+	ResponseMethodNotAllowed HTMLResponse = 405
 )
 
 //-------------------------
+
+var defaultHeader = map[string]string{"X-Accept": "All"}
 
 // Used to hold query parameters for requests
 type QueryParameter struct {
@@ -48,48 +62,70 @@ type QueryParameter struct {
 
 // Storage for a ServiceNow api connection
 type apiConnection struct {
-	baseURL     url.URL
-	connected   bool
-	sessionKey  string
-	credentials string
+	baseURL           url.URL
+	connected         bool
+	sessionKey        string
+	credentials       string
+	additionalHeaders map[string]string
 }
 
-func NewAPIConnection(url string) *apiConnection {
-	con := new(apiConnection)
-	con.SetBaseURL(url)
-	con.connected = false
+// Creates and inializes a new apiConnection
+func NewAPIConnection(baseURL string) (*apiConnection, error) {
 
-	return con
+	if u, err := url.Parse(baseURL); err != nil {
+		return nil, err
+	} else {
+		return &apiConnection{baseURL: *u, additionalHeaders: make(map[string]string)}, nil
+	}
 }
 
-func restRequest(con *apiConnection, method htmlMethod, resource string, value string, params []QueryParameter) (resp *http.Response, err error) {
+// Takes an apiConnection, HTML Method, resoucre name, optional value, parameters and returns an http.Responce and error status
+func RestRequest(con apiConnection, method HTMLMethod, resource string, value string, params []QueryParameter) (resp *http.Response, err error) {
 
-	if resource == "" || resource == "/" {
-		return nil, errors.New("restRequest: Resource name required")
+	// Verify Connect has been executed first
+	if ! con.IsConnected() {
+		return nil, errors.New(`RestRequest: Connection not established.  Execute "Connect" first.`)
 	}
 
-	for resource[0] == byte('/') {
-		resource = resource[1:]
-	}
+	var requestString string
 
-	for resource[len(resource)-1] == byte('/') {
-		resource = resource[0:len(resource)-2]
-	}
-	resource = "/" + resource
+	// If no resource is used, default to full path
+	if resource == `` || resource == `/` {
+		requestString = con.GetFullPath()
 
-	if value != "" {
-		for value[0] == byte('/') {
-			value = value[1:]
+	} else {
+		// Pre-process 'resource'
+		// Strip any leading /'s
+		for resource[0] == byte('/') {
+			resource = resource[1:]
 		}
-		value = "/" + value
+		// Add leading '/'
+		resource = "/" + resource
 
-		for value[len(value)-1] == byte('/') {
-			value = value[0:len(value)-2]
+		// Strip any trailing /'s
+		for resource[len(resource)-1] == byte('/') {
+			resource = resource[:len(resource)-1]
 		}
+		// Pre-process 'value'
+		if value != "" {
+			// Strip any leading /'s
+			for value[0] == byte('/') {
+				value = value[1:]
+			}
+			// Add leading '/'
+			value = "/" + value
+
+			// Strip any trailing /'s
+			for value[len(value)-1] == byte('/') {
+				value = value[:len(value)-1]
+			}
+		}
+
+		// Combine final requestString
+		requestString = con.GetFullPath() + resource + value
 	}
 
-	requestString := con.GetFullPath() + resource + value
-
+	// Process any parameters provided and add them to requestString
 	if len(params) > 0 {
 		requestString += "?"
 		spacer := ""
@@ -99,57 +135,83 @@ func restRequest(con *apiConnection, method htmlMethod, resource string, value s
 		}
 	}
 
-	switch method {
-	case MethodGet:
-		fmt.Println(requestString)
-		resp, err = http.Get(requestString)
-	default:
-		return nil, errors.New("restRequest: Unsupported method requested")
+	// Create new "client" to process the request
+	requestClient := &http.Client{Timeout: time.Second * 30}
+
+	// Create new request from requestString
+	req, err := http.NewRequest(string(method), requestString, nil)
+
+	if err != nil {
+		return nil, err
 	}
+
+	for key, value := range defaultHeader {
+		req.Header.Add(key, value)
+	}
+
+	for key, value := range con.additionalHeaders {
+		req.Header.Add(key, value)
+	}
+
+	req.Header.Add("Authorization", "Basic " + con.credentials)
+
+	debugLogger.Printf("Requesting: %s", req.URL)
+
+	resp, err = requestClient.Do(req)
 
 	return
 }
 
-func (con *apiConnection) Connect(username string, password string) error {
-	if con.baseURL == *new(url.URL) {
-		return errors.New("Missing URL: Set a URL value before calling Connect()")
-	}
+func (con *apiConnection) Connect(username string, password string) (ok error) {
 
 	encodedCreds := new(bytes.Buffer)
-	base64.NewEncoder(base64.StdEncoding, encodedCreds).Write([]byte(username + ":" + password))
+	encoder := base64.NewEncoder(base64.StdEncoding, encodedCreds)
+	encoder.Write([]byte(username + ":" + password))
+	encoder.Close()
 	con.credentials = encodedCreds.String()
 
-	resp, err := restRequest(con, MethodGet, "/garbage", "", nil)
+	con.connected = true
 
-	if err != nil {
-		return err
-	}
-
-	if resp.Header.Get("Server") == "ServiceNow" {
-		con.connected = true
-		return nil
-	} else {
-		return err
-	}
+	return
 }
 
+// Sets base URL of connection with default path
 func (con *apiConnection) SetBaseURL(baseURL string) {
 	u, err := url.ParseRequestURI(baseURL)
 	if err != nil {
 		log.Fatal(err)
 	}
 	con.baseURL = *u
-	con.baseURL.Path = "/api/now"
 }
 
+// Returns base hostname of connection
 func (con *apiConnection) GetBaseURL() string {
 	return fmt.Sprintf("%s://%s", con.baseURL.Scheme, con.baseURL.Host)
 }
 
+// Sets folder path of connection URL
+func (con *apiConnection) SetPath(path string) {
+	path = strings.TrimSpace(path)
+
+	// Strip off trailing /'s
+	for path[len(path)-1:] == `/` {
+		path = path[:len(path)-1]
+	}
+
+	con.baseURL.Path = path
+}
+
+// Returns folder path of connection
+func (con *apiConnection) GetPath() string {
+	return fmt.Sprintf("%s", con.baseURL.Path)
+}
+
+// Returns full path of connection, including hostname
 func (con *apiConnection) GetFullPath() string {
 	return fmt.Sprintf("%s://%s%s", con.baseURL.Scheme, con.baseURL.Host, con.baseURL.Path)
 }
 
+// Returns if a connection can be established or not
 func (con *apiConnection) IsConnected() bool {
 	return con.connected
 }
