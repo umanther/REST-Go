@@ -19,6 +19,9 @@ func init() {
 	debugLogger = log.New(os.Stderr, "restgo) ", log.LstdFlags)
 }
 
+//-------------------------
+// ----- E N U M S -----
+
 // HTMLMethod enum ------
 
 // Allowed HTML Methods used for requests
@@ -32,9 +35,7 @@ const (
 	MethodDelete HTMLMethod = "DELETE"
 )
 
-//------------------------
-
-// htmlResponses enum -----
+// HTMlResponse enum -----
 
 // List of possible HTML responses
 type HTMLResponse int
@@ -51,8 +52,12 @@ const (
 )
 
 //-------------------------
+// ----- G L O B A L S -----
 
 var defaultHeader = map[string]string{"X-Accept": "All"}
+
+//-------------------------
+// ----- T Y P E S -----
 
 // Used to hold query parameters for requests
 type QueryParameter struct {
@@ -69,6 +74,11 @@ type apiConnection struct {
 	additionalHeaders map[string]string
 }
 
+//-------------------------
+// ----- F U N C T I O N S -----
+
+// ---------- New Object Initializer ----------
+
 // Creates and inializes a new apiConnection
 func NewAPIConnection(baseURL string) (*apiConnection, error) {
 
@@ -78,6 +88,8 @@ func NewAPIConnection(baseURL string) (*apiConnection, error) {
 		return &apiConnection{baseURL: *u, additionalHeaders: make(map[string]string)}, nil
 	}
 }
+
+// ---------- Action Functions ----------
 
 // Takes an apiConnection, HTML Method, resoucre name, optional value, parameters and returns an http.Responce and error status
 func RestRequest(con apiConnection, method HTMLMethod, resource string, value string, params []QueryParameter) (resp *http.Response, err error) {
@@ -153,7 +165,11 @@ func RestRequest(con apiConnection, method HTMLMethod, resource string, value st
 		req.Header.Add(key, value)
 	}
 
-	req.Header.Add("Authorization", "Basic " + con.credentials)
+	for key, value := range con.additionalHeaders {
+		req.Header.Add(key, value)
+	}
+
+	req.Header.Add("Authorization", "Basic "+con.credentials)
 
 	debugLogger.Printf("Requesting: %s", req.URL)
 
@@ -162,6 +178,7 @@ func RestRequest(con apiConnection, method HTMLMethod, resource string, value st
 	return
 }
 
+// Establishes a connection with API server
 func (con *apiConnection) Connect(username string, password string) (ok error) {
 
 	encodedCreds := new(bytes.Buffer)
@@ -175,31 +192,7 @@ func (con *apiConnection) Connect(username string, password string) (ok error) {
 	return
 }
 
-// Sets base URL of connection with default path
-func (con *apiConnection) SetBaseURL(baseURL string) {
-	u, err := url.ParseRequestURI(baseURL)
-	if err != nil {
-		log.Fatal(err)
-	}
-	con.baseURL = *u
-}
-
-// Returns base hostname of connection
-func (con *apiConnection) GetBaseURL() string {
-	return fmt.Sprintf("%s://%s", con.baseURL.Scheme, con.baseURL.Host)
-}
-
-// Sets folder path of connection URL
-func (con *apiConnection) SetPath(path string) {
-	path = strings.TrimSpace(path)
-
-	// Strip off trailing /'s
-	for path[len(path)-1:] == `/` {
-		path = path[:len(path)-1]
-	}
-
-	con.baseURL.Path = path
-}
+// ---------- Get Functions ----------
 
 // Returns folder path of connection
 func (con *apiConnection) GetPath() string {
@@ -214,4 +207,57 @@ func (con *apiConnection) GetFullPath() string {
 // Returns if a connection can be established or not
 func (con *apiConnection) IsConnected() bool {
 	return con.connected
+}
+
+// Returns a value from additionalHeaders
+func (con *apiConnection) GetHeader(Key string) (value string, ok bool) {
+	value, ok = con.additionalHeaders[Key]
+	return
+}
+
+// Returns base hostname of connection
+func (con *apiConnection) GetBaseURL() string {
+	return fmt.Sprintf("%s://%s", con.baseURL.Scheme, con.baseURL.Host)
+}
+
+// ---------- Add/Set Functions ----------
+
+// Adds a header value to additionalHeaders
+func (con *apiConnection) SetHeader(Key string, Value string) {
+	con.ChangeHeader(Key, Value)
+}
+
+// Sets folder path of connection URL
+func (con *apiConnection) SetPath(path string) {
+	path = strings.TrimSpace(path)
+
+	// Strip off trailing /'s
+	for path[len(path)-1:] == `/` {
+		path = path[:len(path)-1]
+	}
+
+	con.baseURL.Path = path
+}
+
+// Sets base URL of connection with default path
+func (con *apiConnection) SetBaseURL(baseURL string) {
+	u, err := url.ParseRequestURI(baseURL)
+	if err != nil {
+		log.Fatal(err)
+	}
+	con.baseURL = *u
+}
+
+// ---------- Modify Functions ----------
+
+// Modifis a value in additionalHeaders
+func (con *apiConnection) ChangeHeader(Key string, Value string) {
+	con.additionalHeaders[Key] = Value
+}
+
+// ---------- Remove Functions ----------
+
+// Deletes a value in additionalHeaders
+func (con *apiConnection) RemoveHeader(Key string) {
+	delete(con.additionalHeaders, Key)
 }
